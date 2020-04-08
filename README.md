@@ -23,6 +23,46 @@ pip install mxnet autogluon
 
 Our trained Supernet weight is in `$Link/Supernet/checkpoint-XX.pth.tar`, which can be used by Search.
 
+```python
+    # Select a best supernet
+    @ag.args(
+        # Training mode
+        eval=False,
+        auto_continue=False, # False if num_trials > 1
+
+        # Supernet HPO, Some tricks work for specific hyperparameters
+        # choice=ag.space.Int(0, 1),
+        learning_rate=ag.space.Real(0.4, 0.5, log=True),
+        # wd=ag.space.Real(1e-4, 5e-4, log=True),
+        # randaug_n=ag.space.Int(3, 4, 5),
+        # randaug_m=ag.space.Int(5, 10, 15),
+
+        # default
+        randaug_n=3,
+        randaug_m=5,
+        # learning_rate=0.5,
+        weight_decay=4e-5,
+        total_iters=500,#200
+        val_interval=250,#100
+        batch_size=256,
+        momentum=0.9,
+        save='./models',
+        label_smooth=0.1,
+        display_interval=20,
+        save_interval=100
+    )
+    def ag_train_cifar(args, reporter):
+        return pipeline(args, reporter)
+
+    # FIFOScheduler
+    myscheduler = ag.scheduler.FIFOScheduler(ag_train_cifar,
+                                             # resource={'num_cpus': 4, 'num_gpus': 1},
+                                             num_trials=4,
+                                             time_attr='all_iters',
+                                             reward_attr="val_acc")
+```
+
+
 ### Search
 
 Our search result is in `$Link/Search/checkpoint.pth.tar`, which can be used by Evaluation.
