@@ -3,8 +3,14 @@
 
 import numpy as np
 import torch
+import cv2
+import PIL
+from PIL import Image
 from torchvision import transforms
 from torchvision.datasets import CIFAR10
+
+# import torchvision.transforms as transforms
+# import torchvision.datasets as datasets
 
 class Cutout(object):
     def __init__(self, length):
@@ -28,6 +34,49 @@ class Cutout(object):
 
         return img
 
+class OpencvResize(object):
+
+    def __init__(self, size=256):
+        self.size = size
+
+    def __call__(self, img):
+        assert isinstance(img, PIL.Image.Image)
+        img = np.asarray(img) # (H,W,3) RGB
+        img = img[:,:, ::-1] # 2 BGR
+        img = np.ascontiguousarray(img)
+        H, W, _ = img.shape
+        target_size = (int(self.size/H * W + 0.5), self.size) if H < W else (self.size, int(self.size/W * H + 0.5))
+        img = cv2.resize(img, target_size, interpolation=cv2.INTER_LINEAR)
+        img = img[:,:, ::-1] # 2 RGB
+        img = np.ascontiguousarray(img)
+        img = Image.fromarray(img)
+        return img
+
+class ToBGRTensor(object):
+
+    def __call__(self, img):
+        assert isinstance(img, (np.ndarray, PIL.Image.Image))
+        if isinstance(img, PIL.Image.Image):
+            img = np.asarray(img)
+        img = img[:,:, ::-1] # 2 BGR
+        img = np.transpose(img, [2, 0, 1]) # 2 (3, H, W)
+        img = np.ascontiguousarray(img)
+        img = torch.from_numpy(img).float()
+        return img
+
+class DataIterator(object):
+
+    def __init__(self, dataloader):
+        self.dataloader = dataloader
+        self.iterator = enumerate(self.dataloader)
+
+    def next(self):
+        try:
+            _, data = next(self.iterator)
+        except Exception:
+            self.iterator = enumerate(self.dataloader)
+            _, data = next(self.iterator)
+        return data[0], data[1]
 
 def get_dataset(cls, cutout_length=0):
     MEAN = [0.49139968, 0.48215827, 0.44653124]
@@ -56,7 +105,6 @@ def get_dataset(cls, cutout_length=0):
     else:
         raise NotImplementedError
     return dataset_train, dataset_valid
-
 
 ### randa cifar
 

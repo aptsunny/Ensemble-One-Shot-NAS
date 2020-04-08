@@ -1,67 +1,17 @@
 import os
 import sys
 import torch
-import argparse
 import torch.nn as nn
-import torchvision.transforms as transforms
-import torchvision.datasets as datasets
-import cv2
 import numpy as np
-import PIL
-from PIL import Image
 import time
 import logging
 import argparse
+import autogluon as ag
+import dataset_cifar
 from network_cifar import ShuffleNetV2_OneShot_cifar
 from utils import accuracy, AvgrageMeter, CrossEntropyLabelSmooth, save_checkpoint, get_lastest_model, get_parameters
-# from utils import accuracy, AvgrageMeter, CrossEntropyLabelSmooth, save_checkpoint, get_parameters
 from flops import get_cand_flops
-
-import autogluon as ag
-
-class OpencvResize(object):
-
-    def __init__(self, size=256):
-        self.size = size
-
-    def __call__(self, img):
-        assert isinstance(img, PIL.Image.Image)
-        img = np.asarray(img) # (H,W,3) RGB
-        img = img[:,:, ::-1] # 2 BGR
-        img = np.ascontiguousarray(img)
-        H, W, _ = img.shape
-        target_size = (int(self.size/H * W + 0.5), self.size) if H < W else (self.size, int(self.size/W * H + 0.5))
-        img = cv2.resize(img, target_size, interpolation=cv2.INTER_LINEAR)
-        img = img[:,:, ::-1] # 2 RGB
-        img = np.ascontiguousarray(img)
-        img = Image.fromarray(img)
-        return img
-
-class ToBGRTensor(object):
-
-    def __call__(self, img):
-        assert isinstance(img, (np.ndarray, PIL.Image.Image))
-        if isinstance(img, PIL.Image.Image):
-            img = np.asarray(img)
-        img = img[:,:, ::-1] # 2 BGR
-        img = np.transpose(img, [2, 0, 1]) # 2 (3, H, W)
-        img = np.ascontiguousarray(img)
-        img = torch.from_numpy(img).float()
-        return img
-
-class DataIterator(object):
-
-    def __init__(self, dataloader):
-        self.dataloader = dataloader
-        self.iterator = enumerate(self.dataloader)
-
-    def next(self):
-        try:
-            _, data = next(self.iterator)
-        except Exception:
-            self.iterator = enumerate(self.dataloader)
-            _, data = next(self.iterator)
-        return data[0], data[1]
+from dataset_cifar import DataIterator
 
 def adjust_bn_momentum(model, iters):
     for m in model.modules():
@@ -92,12 +42,13 @@ def train(model, device, args, *, val_interval, bn_process=False, all_iters=None
         data, target = data.to(device), target.to(device)
         data_time = time.time() - d_st
 
-
+        # 4 choice in one block, 20 blocks
         # get_random_cand = lambda:tuple(np.random.randint(4) for i in range(20)) # imagenet
         get_random_cand = lambda:tuple(np.random.randint(2) for i in range(5)) # cifar
         # get_random_cand = lambda:tuple(np.random.randint(4) for i in range(5)) # cifar
         # get_random_cand = lambda:tuple(np.random.randint(args.choice) for i in range(5)) # cifar
 
+        # flops restriction
         flops_l, flops_r, flops_step = 290, 360, 10
         bins = [[i, i+flops_step] for i in range(flops_l, flops_r, flops_step)]
 
@@ -116,10 +67,6 @@ def train(model, device, args, *, val_interval, bn_process=False, all_iters=None
         optimizer.zero_grad()
         loss.backward()
 
-        # reporter(task_id=task_id, total_iters=all_iters, val_acc=1 - Top1_err / args.display_interval)
-
-        # reporter(task_id=task_id, total_iters=all_iters, loss=loss)
-
         for p in model.parameters():
             if p.grad is not None and p.grad.sum() == 0:
                 p.grad = None
@@ -130,14 +77,11 @@ def train(model, device, args, *, val_interval, bn_process=False, all_iters=None
         Top1_err += 1 - prec1.item() / 100
         Top5_err += 1 - prec5.item() / 100
 
-
-
         if all_iters % args.display_interval == 0: #20
             printInfo = 'TRAIN Iter {}: lr = {:.6f},\tloss = {:.6f},\t'.format(all_iters, scheduler.get_lr()[0], loss.item()) + \
                         'Top-1 err = {:.6f},\t'.format(Top1_err / args.display_interval) + \
                         'Top-5 err = {:.6f},\t'.format(Top5_err / args.display_interval) + \
                         'data_time = {:.6f},\ttrain_time = {:.6f}'.format(data_time, (time.time() - t1) / args.display_interval)
-
 
             logging.info(printInfo)
             t1 = time.time()
@@ -153,8 +97,6 @@ def train(model, device, args, *, val_interval, bn_process=False, all_iters=None
             save_checkpoint({
                 'state_dict': model.state_dict(),
                 }, all_iters, tag='Supernet:{}_'.format(task_id))
-
-
 
     return all_iters, report_top1, report_top5
 
@@ -186,20 +128,17 @@ def validate(model, device, args, *, all_iters=None):
             top1.update(prec1.item(), n)
             top5.update(prec5.item(), n)
 
-
     logInfo = 'TEST Iter {}: loss = {:.6f},\t'.format(all_iters, objs.avg) + \
               'Top-1 err = {:.6f},\t'.format(1 - top1.avg / 100) + \
               'Top-5 err = {:.6f},\t'.format(1 - top5.avg / 100) + \
               'val_time = {:.6f}'.format(time.time() - t1)
     logging.info(logInfo)
 
-
-# def main():
-def main(args, reporter):
-    # print(args)
+def pipeline(args, reporter):
+    # num_trials
     task_id = args['task_id']
 
-    # Log
+    # Log for one Supernet
     log_format = '[%(asctime)s] %(message)s'
     logging.basicConfig(stream=sys.stdout, level=logging.INFO,
                         format=log_format, datefmt='%d %I:%M:%S')
@@ -249,7 +188,6 @@ def main(args, reporter):
     """
 
     # load cifar
-    import dataset_cifar #50000，10000
     dataset_train, dataset_valid = dataset_cifar.get_dataset("cifar10")
     train_loader = torch.utils.data.DataLoader(dataset_train,
                                                batch_size=args.batch_size,
@@ -259,11 +197,10 @@ def main(args, reporter):
                                                num_workers=1)
     train_dataprovider = DataIterator(train_loader)
     val_dataprovider = DataIterator(valid_loader)
-
     print('load data successfully')
 
-    # model = ShuffleNetV2_OneShot()
     model = ShuffleNetV2_OneShot_cifar(n_class=10)
+
     # get_parameters
     optimizer = torch.optim.SGD(get_parameters(model),
                                 lr=args.learning_rate,
@@ -287,11 +224,10 @@ def main(args, reporter):
                                                   lambda step: (
                                                               1.0 - step / args.total_iters) if step <= args.total_iters else 0,
                                                   last_epoch=-1)
-
     model = model.to(device)
 
     all_iters = 0
-    if args.auto_continue: # 载入model
+    if args.auto_continue: # load model
         lastest_model, iters = get_lastest_model()
         if lastest_model is not None:
             all_iters = iters
@@ -299,7 +235,7 @@ def main(args, reporter):
             model.load_state_dict(checkpoint['state_dict'], strict=True)
             print('load from checkpoint')
             for i in range(iters):
-                scheduler.step() # lr 对齐
+                scheduler.step() # lr Align
 
     args.optimizer = optimizer
     args.loss_function = loss_function
@@ -319,10 +255,9 @@ def main(args, reporter):
     while all_iters < args.total_iters:
         all_iters, Top1_acc, Top5_acc = \
             train(model, device, args, val_interval=args.val_interval, bn_process=False, all_iters=all_iters, task_id=task_id, reporter=reporter)
+        # all_iters = train(model, device, args, val_interval=int(1280000/args.batch_size), bn_process=True, all_iters=all_iters)
+        # save_checkpoint({'state_dict': model.state_dict(),}, args.total_iters, tag='bnps-')
         # print(all_iters, Top1_acc)
-
-    # all_iters = train(model, device, args, val_interval=int(1280000/args.batch_size), bn_process=True, all_iters=all_iters)
-    # save_checkpoint({'state_dict': model.state_dict(),}, args.total_iters, tag='bnps-')
 
     # reporter(task_id=task_id, val_acc=Top1_acc)
 
@@ -353,21 +288,23 @@ def get_args():
 if __name__ == "__main__":
     os.chdir(os.path.split(os.path.realpath(__file__))[0])
     print(os.getcwd())
-    # 0
-    # main()
 
-    args = get_args()
-    print(args)
+    # args = get_args()
+    # print(args)
+
+    # Select a best supernet
+
     @ag.args(
-        # training
+        # Training mode
         eval=False,
         auto_continue=False, # False if num_trials > 1
 
-        # hpo
+        # Supernet HPO
         # choice=ag.space.Int(0, 1),
         learning_rate=ag.space.Real(0.4, 0.5, log=True),
         # wd=ag.space.Real(1e-4, 5e-4, log=True),
 
+        # default
         # learning_rate=0.5,
         weight_decay=4e-5,
         total_iters=2000,#200
@@ -380,8 +317,9 @@ if __name__ == "__main__":
         save_interval=100
     )
     def ag_train_cifar(args, reporter):
-        return main(args, reporter)
+        return pipeline(args, reporter)
 
+    # FIFOScheduler
     myscheduler = ag.scheduler.FIFOScheduler(ag_train_cifar,
                                              # resource={'num_cpus': 4, 'num_gpus': 1},
                                              num_trials=2,
@@ -390,6 +328,6 @@ if __name__ == "__main__":
     print(myscheduler)
     myscheduler.run()
     myscheduler.join_jobs()
-    myscheduler.get_training_curves(filename='Supernet', plot=True, use_legend=False)
-    print('The Best Configuration and Accuracy are: {}, {}'.format(myscheduler.get_best_config(),
+    myscheduler.get_training_curves(filename='Supernet_curves', plot=True, use_legend=False)
+    print('The Best Supernet Configuration and Accuracy are: {}, {}'.format(myscheduler.get_best_config(),
                                                                    myscheduler.get_best_reward()))
