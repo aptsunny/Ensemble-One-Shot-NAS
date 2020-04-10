@@ -28,19 +28,19 @@ class ShuffleNetV2_OneShot_cifar(nn.Module):
 
         self.features = torch.nn.ModuleList()
         archIndex = 0
-        for idxstage in range(len(self.stage_repeats)):
-            numrepeat = self.stage_repeats[idxstage]
-            output_channel = self.stage_out_channels[idxstage + 2]
+        for idxstage in range(len(self.stage_repeats)): # idxstage 1, 2, 3, 4
+            numrepeat = self.stage_repeats[idxstage] # 1, 1, 2, 1
+            output_channel = self.stage_out_channels[idxstage + 2] # find output channel
 
             for i in range(numrepeat):
                 if i == 0:
-                    inp, outp, stride = input_channel, output_channel, 2
+                    inp, outp, stride = input_channel, output_channel, 2 # first conv down sample
                 else:
-                    inp, outp, stride = input_channel // 2, output_channel, 1
+                    inp, outp, stride = input_channel // 2, output_channel, 1 #
 
                 base_mid_channels = outp // 2
                 mid_channels = int(base_mid_channels)
-                archIndex += 1
+                archIndex += 1 # 每个stage 中conv的id
                 self.features.append(torch.nn.ModuleList())
                 for blockIndex in range(4):
                     if blockIndex == 0:
@@ -122,18 +122,24 @@ class ShuffleNetV2_OneShot_cifar(nn.Module):
                     nn.init.constant_(m.bias, 0)
 
 if __name__ == "__main__":
+    # architecture = [0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3]
     # architecture = [0, 0, 3, 1, 1, 1, 0, 0, 2, 0, 2, 1, 1, 0, 2, 0, 2, 1, 3, 2]
-    # scale_list = [0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.4, 1.6]
-    # scale_ids = [6, 5, 3, 5, 2, 6, 3, 4, 2, 5, 7, 5, 4, 6, 7, 4, 4, 5, 4, 3]
+    scale_list = [0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.4, 1.6]
+    scale_ids = [6, 5, 3, 5, 2, 6, 3, 4, 2, 5, 7, 5, 4, 6, 7, 4, 4, 5, 4, 3]
+
+    #               1  1  2     1
+    architecture = [0, 1, 2, 2, 3]
+
     channels_scales = []
     for i in range(len(scale_ids)):
         channels_scales.append(scale_list[scale_ids[i]])
-    model = ShuffleNetV2_OneShot()
-    # print(model)
+
+    model = ShuffleNetV2_OneShot_cifar()
+    print(model)
 
     test_data = torch.rand(5, 3, 224, 224)
     # test_data = torch.rand(5, 3, 32, 32)
-    # test_outputs = model(test_data, architecture)
-    test_outputs = model(test_data)
+    test_outputs = model(test_data, architecture)
+    # test_outputs = model(test_data)
     print(test_outputs.size())
 
