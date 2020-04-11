@@ -27,7 +27,7 @@ class Shufflenet(nn.Module):
             nn.Conv2d(mid_channels, mid_channels, ksize,
                       stride, pad, groups=mid_channels, bias=False),
             nn.BatchNorm2d(mid_channels, affine=False),
-            # pw-linear
+            # pw-linear 3->8
             nn.Conv2d(mid_channels, outputs, 1, 1, 0, bias=False),
             nn.BatchNorm2d(outputs, affine=False),
             nn.ReLU(inplace=True),

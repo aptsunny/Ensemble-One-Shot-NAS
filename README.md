@@ -29,22 +29,37 @@ Our trained Supernet weight is in `$Link/Supernet/checkpoint-XX.pth.tar`, which 
         # Training mode
         eval=False,
         auto_continue=False, # False if num_trials > 1
-
+        flops_restriction=False,
+        activations_count_restriction=False, # pycls
+        RandA=False,
         # Supernet HPO, Some tricks work for specific hyperparameters
-        # choice=ag.space.Int(0, 1),
+        # 4 choice for a block (Shuffle3x3\Shuffle5x5\Shuffle7x7\Xception)
+        signal='Experiments',
+        choice=4,
+        block=5,
+        sample_choice=1,
+        total_iters=500,  # one epoch 195 * 256 = 49920
+        batch_size=256,
+
+        # blockly lr_scheduler
+        # learning_rate_group=ag.space.Real(0.4, 0.5, log=True),
+
+        # lr & wd
         learning_rate=ag.space.Real(0.4, 0.5, log=True),
         # wd=ag.space.Real(1e-4, 5e-4, log=True),
-        # randaug_n=ag.space.Int(3, 4, 5),
-        # randaug_m=ag.space.Int(5, 10, 15),
 
-        # default
+        # randaug
         randaug_n=3,
         randaug_m=5,
+        # randaug_n=ag.space.Int(3, 4, 5),
+        # randaug_m=ag.space.Int(5, 10, 15),
+        # choice=ag.space.Int(0, 1),
+
+        # default parameters
+        # randaug_n=3,
+        # randaug_m=5,
         # learning_rate=0.5,
         weight_decay=4e-5,
-        total_iters=500,#200
-        val_interval=250,#100
-        batch_size=256,
         momentum=0.9,
         save='./models',
         label_smooth=0.1,
@@ -57,9 +72,15 @@ Our trained Supernet weight is in `$Link/Supernet/checkpoint-XX.pth.tar`, which 
     # FIFOScheduler
     myscheduler = ag.scheduler.FIFOScheduler(ag_train_cifar,
                                              # resource={'num_cpus': 4, 'num_gpus': 1},
-                                             num_trials=4,
+                                             num_trials=1,
                                              time_attr='all_iters',
                                              reward_attr="val_acc")
+    print(myscheduler)
+    myscheduler.run()
+    myscheduler.join_jobs()
+    myscheduler.get_training_curves(filename='Supernet_curves', plot=True, use_legend=False)
+    print('The Best Supernet Configuration and Accuracy are: {}, {}'.format(myscheduler.get_best_config(),
+                                                                   myscheduler.get_best_reward()))
 ```
 
 

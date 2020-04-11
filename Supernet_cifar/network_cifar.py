@@ -5,38 +5,56 @@ from blocks import Shufflenet, Shuffle_Xception
 
 class ShuffleNetV2_OneShot_cifar(nn.Module):
 
-    def __init__(self, input_size=32, n_class=10):
+    def __init__(self, input_size=32, block=5, n_class=10):
         super(ShuffleNetV2_OneShot_cifar, self).__init__()
 
         assert input_size % 32 == 0
 
         # block
-        # self.stage_repeats = [4, 4, 8, 4] # imagenet layer20
-        self.stage_repeats = [1, 1, 2, 1] # cifar layer5
+        if block==20:
+            self.stage_repeats = [4, 4, 8, 4] # imagenet layer20
+            self.stage_strides = [2, 2, 2, 2] # every stage downsample
+            # width:channel
+            self.stage_out_channels = [-1, 16, 64, 160, 320, 640, 1024]
+            # 3-16, (16-64, 64-160, 160-320, 320-640), 640-1000
+            # building first layer
+            input_channel = self.stage_out_channels[1]
+            self.first_conv = nn.Sequential(
+                nn.Conv2d(3, input_channel, 3, 2, 1, bias=False),
+                nn.BatchNorm2d(input_channel, affine=False),
+                nn.ReLU(inplace=True),
+            )
 
-        # width:channel
-        self.stage_out_channels = [-1, 16, 64, 160, 320, 640, 1024]
+        elif block==5:
+            self.stage_repeats = [1, 1, 2, 1] # cifar layer5
+            self.stage_strides = [1, 1, 2, 2]  # downsample
+            # width:channel
+            # 3-16, (16-16, 16-16, 16-32, 32-64), 64-10
+            self.stage_out_channels = [-1, 16, 16, 16, 32, 64, 777]
 
-        # 4->64 ;
-        # building first layer
-        input_channel = self.stage_out_channels[1]
-        self.first_conv = nn.Sequential(
-            nn.Conv2d(3, input_channel, 3, 2, 1, bias=False),
-            nn.BatchNorm2d(input_channel, affine=False),
-            nn.ReLU(inplace=True),
-        )
+            # building first layer
+            input_channel = self.stage_out_channels[1]
+            self.first_conv = nn.Sequential(
+                nn.Conv2d(3, input_channel, 3, 1, 1, bias=False),
+                nn.BatchNorm2d(input_channel, affine=False),
+                nn.ReLU(inplace=True),
+            )
+
 
         self.features = torch.nn.ModuleList()
         archIndex = 0
-        for idxstage in range(len(self.stage_repeats)): # idxstage 1, 2, 3, 4
+        for idxstage in range(len(self.stage_repeats)): # idxstage 0, 1, 2, 3
             numrepeat = self.stage_repeats[idxstage] # 1, 1, 2, 1
             output_channel = self.stage_out_channels[idxstage + 2] # find output channel
+            aa = self.stage_strides[idxstage]
 
             for i in range(numrepeat):
-                if i == 0:
-                    inp, outp, stride = input_channel, output_channel, 2 # first conv down sample
+                if i == 0 and aa==2: # first conv must down sample
+                    inp, outp, stride = input_channel, output_channel, aa
+                elif i == 0 and aa==1:
+                    inp, outp, stride = input_channel // 2, output_channel, aa
                 else:
-                    inp, outp, stride = input_channel // 2, output_channel, 1 #
+                    inp, outp, stride = input_channel // 2, output_channel, 1
 
                 base_mid_channels = outp // 2
                 mid_channels = int(base_mid_channels)
@@ -73,7 +91,11 @@ class ShuffleNetV2_OneShot_cifar(nn.Module):
             nn.BatchNorm2d(self.stage_out_channels[-1], affine=False),
             nn.ReLU(inplace=True),
         )
-        self.globalpool = nn.AvgPool2d(7)
+        if block == 20:
+            self.globalpool = nn.AvgPool2d(7)
+        elif block == 5:
+            self.globalpool = nn.AdaptiveAvgPool2d((1, 1))
+
         self.dropout = nn.Dropout(0.1)
         self.classifier = nn.Sequential(
             nn.Linear(self.stage_out_channels[-1], n_class, bias=False))

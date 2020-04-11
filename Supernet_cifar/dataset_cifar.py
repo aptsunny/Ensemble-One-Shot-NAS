@@ -12,6 +12,8 @@ from torchvision.datasets import CIFAR10
 # import torchvision.transforms as transforms
 # import torchvision.datasets as datasets
 
+from RandAugment import RandAugment
+
 class Cutout(object):
     def __init__(self, length):
         self.length = length
@@ -78,17 +80,19 @@ class DataIterator(object):
             _, data = next(self.iterator)
         return data[0], data[1]
 
-def get_dataset(cls, cutout_length=0):
+def get_dataset(cls, cutout_length=0, N=3, M=5, RandA=False):
     MEAN = [0.49139968, 0.48215827, 0.44653124]
     STD = [0.24703233, 0.24348505, 0.26158768]
+
     transf = [
-        transforms.Resize(256), # cifar->imagenet
-        transforms.RandomCrop(224, padding=4),
+        # transforms.Resize(256), # cifar->imagenet
+        transforms.RandomCrop(32, padding=4),
         transforms.RandomHorizontalFlip()
     ]
 
     normalize = [
-        transforms.Resize(224), # cifar->imagenet
+        # transforms.Resize(224), # cifar->imagenet
+        transforms.Resize(32), # cifar->imagenet
         transforms.ToTensor(),
         transforms.Normalize(MEAN, STD)
     ]
@@ -97,6 +101,10 @@ def get_dataset(cls, cutout_length=0):
         cutout.append(Cutout(cutout_length))
 
     train_transform = transforms.Compose(transf + normalize + cutout)
+    if RandA:
+        # Add RandAugment with N, M(hyperparameter)
+        train_transform.transforms.insert(0, RandAugment(N, M))
+
     valid_transform = transforms.Compose(normalize)
 
     if cls == "cifar10":
