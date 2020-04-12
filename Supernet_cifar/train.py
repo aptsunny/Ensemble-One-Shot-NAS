@@ -11,18 +11,15 @@ import dataset_cifar
 from torch.utils.data import SubsetRandomSampler
 from sklearn.model_selection import StratifiedShuffleSplit
 from dataset_cifar import DataIterator, SubsetSampler
-# import loader
-# from utils.meters import TestMeter, TrainMeter
+from utils import accuracy, AvgrageMeter, CrossEntropyLabelSmooth, save_checkpoint, get_lastest_model, get_parameters, shuffle_dif_lr_parameters, mobile_dif_lr_parameters, count_parameters_in_MB, random_choice, adjust_bn_momentum
 
-from network_cifar import ShuffleNetV2_OneShot_cifar
-from utils import accuracy, AvgrageMeter, CrossEntropyLabelSmooth, save_checkpoint, get_lastest_model, get_parameters, get_dif_lr_parameters
-from flops import get_cand_flops
-from opt import Lookahead, BlocklyOptimizer
+# network
+from network_mobile import SuperNetwork
+from network_shuffle import ShuffleNetV2_OneShot_cifar
 
-def adjust_bn_momentum(model, iters):
-    for m in model.modules():
-        if isinstance(m, nn.BatchNorm2d):
-            m.momentum = 1 / iters
+# optimizer
+# from flops import get_cand_flops
+# from opt import Lookahead, BlocklyOptimizer
 
 def train(model, optimizer, device, args, *, bn_process=False, all_iters=None, reporter=None):
     # optimizer = args.optimizer
@@ -50,30 +47,39 @@ def train(model, optimizer, device, args, *, bn_process=False, all_iters=None, r
         data, target = data.to(device), target.to(device)
         data_time = time.time() - d_st
 
-        # 4 choice in one block, 20 choices
-        # get_random_cand = lambda:tuple(np.random.randint(4) for i in range(20)) # imagenet
-        # get_random_cand = lambda:tuple(np.random.randint(2) for i in range(5)) # cifar
+        # search space
+        if args.block==5:
+            # shuffle, 4 choice in one block, 20 choices
+            # get_random_cand = lambda:tuple(np.random.randint(4) for i in range(20)) # imagenet
+            # get_random_cand = lambda:tuple(np.random.randint(2) for i in range(5)) # cifar
+            get_random_cand = lambda:tuple(np.random.randint(args.sample_choice) for i in range(args.block)) # cifar
+            # uniform
+            # flops restriction
+            if args.flops_restriction:
+                flops_l, flops_r, flops_step = 290, 360, 10
+                bins = [[i, i + flops_step] for i in range(flops_l, flops_r, flops_step)]
 
-        get_random_cand = lambda:tuple(np.random.randint(args.sample_choice) for i in range(args.block)) # cifar
+                # 300 * 1000 000
+                def get_uniform_sample_cand(*, timeout=500):
+                    idx = np.random.randint(len(bins))
+                    l, r = bins[idx]
+                    for i in range(timeout):
+                        cand = get_random_cand()
+                        # if l*1e6 <= get_cand_flops(cand) <= r*1e6:
+                        #     return cand
+                        return cand
+                    return get_random_cand()
 
-        # uniform
-        # flops restriction
-        if args.flops_restriction:
-            flops_l, flops_r, flops_step = 290, 360, 10
-            bins = [[i, i+flops_step] for i in range(flops_l, flops_r, flops_step)]
-            # 300 * 1000 000
-            def get_uniform_sample_cand(*,timeout=500):
-                idx = np.random.randint(len(bins))
-                l, r = bins[idx]
-                for i in range(timeout):
-                    cand = get_random_cand()
-                    # if l*1e6 <= get_cand_flops(cand) <= r*1e6:
-                    #     return cand
-                    return cand
-                return get_random_cand()
-            output = model(data, get_uniform_sample_cand())
-        else:
-            output = model(data, get_random_cand())
+                output = model(data, get_uniform_sample_cand())
+            else:
+                output = model(data, get_random_cand())
+
+        elif args.block==12:
+            # s1, sample_choice=1,45s/epoch, sample_choice=3,65s/epoch
+            choice = random_choice(path_num=args.choice, m=args.sample_choice, layers=args.block)
+            output = model(data, choice)
+
+
 
         loss = loss_function(output, target)
         optimizer.zero_grad()
@@ -92,10 +98,13 @@ def train(model, optimizer, device, args, *, bn_process=False, all_iters=None, r
         Top5_err += 1 - prec5.item() / 100
 
         if all_iters % display_interval == 0: #20
-            printInfo = 'TRAIN Epoch {}: lr = {:.6f},\tloss = {:.6f},\t'.format(all_iters / display_interval, scheduler.get_lr()[0], loss.item()) + \
-                        'Top-1 err = {:.6f},\t'.format(Top1_err / display_interval) + \
-                        'Top-5 err = {:.6f},\t'.format(Top5_err / display_interval) + \
-                        'iter_load_data_time = {:.6f},\tepoch_train_time = {:.6f}'.format(data_time, time.time() - t1)
+            # print('{}-task_id: {}, lr: {}'.format(args.signal, args.task_id, args.learning_rate))
+            printInfo = '{}-Task_id: {}, Base_lr: {:.2f},\t'.format(args.signal, args.task_id, args.learning_rate) + \
+                        'TRAIN Epoch {}: lr = {:.4f},\tloss = {:.4f},\t'.format(all_iters / display_interval, scheduler.get_lr()[0], loss.item()) + \
+                        'Top-1 err = {:.4f},\t'.format(Top1_err / display_interval) + \
+                        'Top-5 err = {:.4f},\t'.format(Top5_err / display_interval) + \
+                        'epoch_train_time = {:.2f}'.format(time.time() - t1)
+                        # 'iter_load_data_time = {:.6f},\tepoch_train_time = {:.6f}'.format(data_time, time.time() - t1)
             logging.info(printInfo)
             t1 = time.time()
             report_top1, report_top5 = 1 - Top1_err/ display_interval, 1 - Top5_err / display_interval
@@ -118,7 +127,8 @@ def validate(model, device, args, *, all_iters=None):
     val_dataprovider = args.val_dataprovider
 
     model.eval()
-    max_val_iters = 5 # 250
+    # max_val_iters = 250 # 250
+    max_val_iters = len(val_dataprovider) # 250
     t1  = time.time()
     with torch.no_grad():
         for _ in range(1, max_val_iters + 1):
@@ -144,8 +154,11 @@ def validate(model, device, args, *, all_iters=None):
     logging.info(logInfo)
 
 def pipeline(args, reporter):
+    # test lr_range
+    # args.learning_rate = args.learning_rate * (args['task_id']+ 1)
     # num_trials
-    print('{}-task_id{}'.format(args['signal'], args['task_id']))
+    # print('{}-task_id: {}, base_lr: {}'.format(args.signal, args.task_id, args.learning_rate))
+    print('{}-task_id: {}'.format(args.signal, args.task_id))
 
     # Log for one Supernet
     log_format = '[%(asctime)s] %(message)s'
@@ -160,6 +173,7 @@ def pipeline(args, reporter):
     fh.setFormatter(logging.Formatter(log_format))
     logging.getLogger().addHandler(fh)
 
+    # resource
     use_gpu = False
     if torch.cuda.is_available():
         use_gpu = True
@@ -191,34 +205,43 @@ def pipeline(args, reporter):
 
     train_dataprovider = DataIterator(train_loader)
     val_dataprovider = DataIterator(valid_loader)
-    args.val_interval = int(len(dataset_train) / args.batch_size)
+    args.val_interval = int(len(dataset_train) / args.batch_size) # step/epoch
     print('load data successfully')
 
-    model = ShuffleNetV2_OneShot_cifar(block=args['block'], n_class=10)
+    # network
+    # model = ShuffleNetV2_OneShot_cifar(block=args['block'], n_class=10)
+    model = SuperNetwork(shadow_bn=True, layers=args['block'], classes=10)
+    print("param size = %fMB" % count_parameters_in_MB(model))
 
-    # original
+    # original optimizer lr & wd
     # optimizer = torch.optim.SGD(get_parameters(model),
     #                             lr=args.learning_rate,
     #                             momentum=args.momentum,
     #                             weight_decay=args.weight_decay)
 
     # parameters divided into groups
-    # test lr_group (4 stage * 5choice + 1base_lr == 21)
+    # test shuffle lr_group (4 stage * 5choice + 1base_lr == 21)
+    # test mobile lr_group (12 stage * 12 choice + 1base_lr == 145)
+
     # lr_group = [i/100 for i in list(range(4,25,1))]
     # arch_search = list(np.random.randint(2) for i in range(5*2))
     # optimizer = torch.optim.SGD(get_dif_lr_parameters(model, lr_group, arch_search),
 
-    # test lr_range
-    args.learning_rate = args.learning_rate * (args['task_id']+ 1)
-
-
     # lr and parameters
     if args.different_hpo:
-        nums_lr_group = args['block'] * args['choice'] + 1
-        lr_group = list(np.random.uniform(0.4, 0.8) for i in range(nums_lr_group))
-        optimizer = torch.optim.SGD(get_dif_lr_parameters(model, lr_group),
-                                    momentum=args.momentum,
-                                    weight_decay=args.weight_decay)
+        if args['block']==5:
+            nums_lr_group = args['block'] * args['choice'] + 1
+            lr_group = list(np.random.uniform(0.4, 0.8) for i in range(nums_lr_group))
+            optimizer = torch.optim.SGD(shuffle_dif_lr_parameters(model, lr_group),
+                                        momentum=args.momentum,
+                                        weight_decay=args.weight_decay)
+        elif args['block']==12:
+            nums_lr_group=145
+            lr_group = list(np.random.uniform(0.1, 0.3) for i in range(nums_lr_group))
+            optimizer = torch.optim.SGD(mobile_dif_lr_parameters(model, lr_group),
+                                        momentum=args.momentum,
+                                        weight_decay=args.weight_decay)
+
     else:
         optimizer = torch.optim.SGD(model.parameters(),
                                     lr=args.learning_rate, # without hpo / glboal hpo
@@ -249,6 +272,10 @@ def pipeline(args, reporter):
     # lr_scheduler is related to total_iters
     scheduler = torch.optim.lr_scheduler.LambdaLR \
         (optimizer, lambda step: (1.0 - step / args.total_iters) if step <= args.total_iters else 0, last_epoch=-1)
+
+    # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+    #     optimizer, float(args.total_iters / args.val_interval), eta_min=1e-8, last_epoch=-1)
+
 
     model = model.to(device)
 
@@ -289,6 +316,7 @@ def pipeline(args, reporter):
 
         # print(all_iters, Top1_acc)
 
+    scheduler.step()
     # reporter(task_id=task_id, val_acc=Top1_acc)
 
 # useless
@@ -318,63 +346,66 @@ def get_args():
 
 if __name__ == "__main__":
     os.chdir(os.path.split(os.path.realpath(__file__))[0])
-    print(os.getcwd())
+    # print(os.getcwd())
+
+    # default
     # args = get_args()
     # print(args)
 
-    # Select a best supernet
+    # Select A Best Supernet
     @ag.args(
+        signal='Experiments',
+
         # Training mode
         eval=False,
         auto_continue=False, # False if num_trials > 1
-        flops_restriction=False,
+        flops_restriction=False, # spos
         activations_count_restriction=False, # pycls
-        RandA=False,
-        # Supernet HPO, Some tricks work for specific hyperparameters
-        # 4 choice for a block (Shuffle3x3\Shuffle5x5\Shuffle7x7\Xception)
-        signal='Experiments',
-        choice=4,
-        block=5,
-        sample_choice=1,
-        total_iters=19500,  # 1950,19500, one epoch 195 * 256 = 49920
-        batch_size=256,
+        RandA=False, # RA(RandAugment)
 
-        # blockly lr_scheduler
-        # learning_rate_group=ag.space.Real(0.4, 0.5, log=True),
+        # Supernet HPO, Some tricks work for specific hyperparameters
+
+        # network_shuffle: 4 choice for 5 blocks (Shuffle3x3\Shuffle5x5\Shuffle7x7\Xception)
+        # network_mobile: 1/2/3 choice for 12 layers {'conv': [1, 2], 'rate': 1},
+        choice=4,
+        block=12, # shuffle block 5, mobile 12 layers
+        sample_choice=2, # shuffle ,1/2/3/4,
+        # sample_choice=ag.space.Int(1, 2, 3), # mobile
+        total_iters=39000,  # 39000,1950,19500, cifar10: one epoch 195 * 256 = 49920
+        batch_size= 288,# shuffle 256, mobile 288
 
         fake=ag.space.Real(0.4, 0.8, log=True),
+        # learning_rate=0.3, # test_lr_range
+
+        # blockwisely lr_scheduler
         # lr & wd
-        different_hpo=False,
-        # learning_rate=ag.space.Real(0.4, 0.8, log=True), # glboal hpo
-        # learning_rate=0.4, # without hpo
-        learning_rate=0.1, # test_lr_range
+        # different_hpo=False,
+        different_hpo=True,
+        # learning_rate=ag.space.Real(0.2, 0.3, log=True), # glboal hpo, mobile
+        # learning_rate=ag.space.Real(0.4, 0.8, log=True), # glboal hpo, shuffle
+        learning_rate=0.2, # without hpo
         # wd=ag.space.Real(1e-4, 5e-4, log=True),
 
         # randaug
-        randaug_n=3,
-        randaug_m=5,
         # randaug_n=ag.space.Int(3, 4, 5),
         # randaug_m=ag.space.Int(5, 10, 15),
         # choice=ag.space.Int(0, 1),
 
         # default parameters
-        # randaug_n=3,
-        # randaug_m=5,
-        # learning_rate=0.5,
+        randaug_n=3,
+        randaug_m=5,
         weight_decay=4e-5,
         momentum=0.9,
         save='./models',
         label_smooth=0.1,
-        # display_interval=195,#20
-        save_interval=5
+        save_interval=5,
     )
     def ag_train_cifar(args, reporter):
         return pipeline(args, reporter)
 
-    # FIFOScheduler
     myscheduler = ag.scheduler.FIFOScheduler(ag_train_cifar,
                                              # resource={'num_cpus': 4, 'num_gpus': 1},
-                                             num_trials=8,
+                                             num_trials=4,
                                              time_attr='epoch',
                                              reward_attr="val_acc")
     # print(myscheduler)

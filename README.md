@@ -12,7 +12,23 @@ This repository provides the implementation of
 
 ##  Install
 ```bash
+autogluon 账号的安装有问题
+
+pytorch_p36
 pip install mxnet autogluon
+pip._vendor.pkg_resources.ContextualVersionConflict: (scikit-learn 0.20.3 (/home/ubuntu/anaconda3/envs/pytorch_p36/lib/python3.6/site-packages), Requirement.parse('scikit-learn==0.21.2'), {'autogluon'})
+
+
+amazonei_python_36
+pip3 install torch torchvision
+
+No module named 'torch'
+
+
+另一台机器pytorch_p36
+pip install mxnet autogluon
+pip install git+https://github.com/ildoonet/pytorch-randaugment
+
 ```
 
 ## Our Trained Model / Checkpoint
@@ -24,58 +40,63 @@ pip install mxnet autogluon
 Our trained Supernet weight is in `$Link/Supernet/checkpoint-XX.pth.tar`, which can be used by Search.
 
 ```python
-    # Select a best supernet
+# Select A Best Supernet
     @ag.args(
+        signal='Experiments',
+
         # Training mode
         eval=False,
         auto_continue=False, # False if num_trials > 1
-        flops_restriction=False,
+        flops_restriction=False, # spos
         activations_count_restriction=False, # pycls
-        RandA=False,
+        RandA=False, # RA(RandAugment)
+
         # Supernet HPO, Some tricks work for specific hyperparameters
-        # 4 choice for a block (Shuffle3x3\Shuffle5x5\Shuffle7x7\Xception)
-        signal='Experiments',
+
+        # network_shuffle: 4 choice for 5 blocks (Shuffle3x3\Shuffle5x5\Shuffle7x7\Xception)
+        # network_mobile: 1/2/3 choice for 12 layers {'conv': [1, 2], 'rate': 1},
         choice=4,
-        block=5,
-        sample_choice=1,
-        total_iters=500,  # one epoch 195 * 256 = 49920
-        batch_size=256,
+        block=12, # shuffle block 5, mobile 12 layers
+        sample_choice=2, # shuffle ,1/2/3/4,
+        # sample_choice=ag.space.Int(1, 2, 3), # mobile
+        total_iters=39000,  # 39000,1950,19500, cifar10: one epoch 195 * 256 = 49920
+        batch_size= 288,# shuffle 256, mobile 288
 
-        # blockly lr_scheduler
-        # learning_rate_group=ag.space.Real(0.4, 0.5, log=True),
+        fake=ag.space.Real(0.4, 0.8, log=True),
+        # learning_rate=0.3, # test_lr_range
 
+        # blockwisely lr_scheduler
         # lr & wd
-        learning_rate=ag.space.Real(0.4, 0.5, log=True),
+        # different_hpo=False,
+        different_hpo=True,
+        # learning_rate=ag.space.Real(0.2, 0.3, log=True), # glboal hpo, mobile
+        # learning_rate=ag.space.Real(0.4, 0.8, log=True), # glboal hpo, shuffle
+        learning_rate=0.2, # without hpo
         # wd=ag.space.Real(1e-4, 5e-4, log=True),
 
         # randaug
-        randaug_n=3,
-        randaug_m=5,
         # randaug_n=ag.space.Int(3, 4, 5),
         # randaug_m=ag.space.Int(5, 10, 15),
         # choice=ag.space.Int(0, 1),
 
         # default parameters
-        # randaug_n=3,
-        # randaug_m=5,
-        # learning_rate=0.5,
+        randaug_n=3,
+        randaug_m=5,
         weight_decay=4e-5,
         momentum=0.9,
         save='./models',
         label_smooth=0.1,
-        display_interval=20,
-        save_interval=100
+        save_interval=5,
     )
     def ag_train_cifar(args, reporter):
         return pipeline(args, reporter)
 
-    # FIFOScheduler
     myscheduler = ag.scheduler.FIFOScheduler(ag_train_cifar,
                                              # resource={'num_cpus': 4, 'num_gpus': 1},
-                                             num_trials=1,
-                                             time_attr='all_iters',
+                                             num_trials=4,
+                                             time_attr='epoch',
                                              reward_attr="val_acc")
-    print(myscheduler)
+    # print(myscheduler)
     myscheduler.run()
     myscheduler.join_jobs()
     myscheduler.get_training_curves(filename='Supernet_curves', plot=True, use_legend=False)
