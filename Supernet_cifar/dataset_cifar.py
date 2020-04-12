@@ -8,6 +8,7 @@ import PIL
 from PIL import Image
 from torchvision import transforms
 from torchvision.datasets import CIFAR10
+from torch.utils.data import Sampler
 
 # import torchvision.transforms as transforms
 # import torchvision.datasets as datasets
@@ -113,6 +114,22 @@ def get_dataset(cls, cutout_length=0, N=3, M=5, RandA=False):
     else:
         raise NotImplementedError
     return dataset_train, dataset_valid
+
+class SubsetSampler(Sampler):
+    r"""Samples elements from a given list of indices, without replacement.
+
+    Arguments:
+        indices (sequence): a sequence of indices
+    """
+
+    def __init__(self, indices):
+        self.indices = indices
+
+    def __iter__(self):
+        return (i for i in self.indices)
+
+    def __len__(self):
+        return len(self.indices)
 
 ### randa cifar
 

@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 import pickle
+from pathlib import Path
+
 
 
 class Shufflenet(nn.Module):
@@ -287,8 +289,13 @@ def get_cand_flops(cand):
     return get_flops(model)
 '''
 
+my_file = Path("/home/ubuntu/workspace/nni_sy/3rdparty/SinglePathOneShot/src/Supernet_cifar/data/op_flops_dict.pkl")
+if my_file.is_file():
+    op_flops_dict = pickle.load(
+        open('/home/ubuntu/workspace/nni_sy/3rdparty/SinglePathOneShot/src/Supernet_cifar/data/op_flops_dict.pkl',
+             'rb'))
 # op_flops_dict = pickle.load(open('./data/op_flops_dict.pkl', 'rb'))
-op_flops_dict = pickle.load(open('/home/ubuntu/workspace/nni_sy/3rdparty/SinglePathOneShot/src/Supernet_cifar/data/op_flops_dict.pkl', 'rb'))
+
 
 backbone_info = [  # inp, oup, img_h, img_w, stride
     (3,     16,     224,    224,    2),  # conv1

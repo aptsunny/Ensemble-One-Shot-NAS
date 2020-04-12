@@ -8,10 +8,15 @@ import logging
 import argparse
 import autogluon as ag
 import dataset_cifar
+from torch.utils.data import SubsetRandomSampler
+from sklearn.model_selection import StratifiedShuffleSplit
+from dataset_cifar import DataIterator, SubsetSampler
+# import loader
+# from utils.meters import TestMeter, TrainMeter
+
 from network_cifar import ShuffleNetV2_OneShot_cifar
 from utils import accuracy, AvgrageMeter, CrossEntropyLabelSmooth, save_checkpoint, get_lastest_model, get_parameters, get_dif_lr_parameters
 from flops import get_cand_flops
-from dataset_cifar import DataIterator
 from opt import Lookahead, BlocklyOptimizer
 
 def adjust_bn_momentum(model, iters):
@@ -26,10 +31,13 @@ def train(model, optimizer, device, args, *, bn_process=False, all_iters=None, r
     train_dataprovider = args.train_dataprovider
     task_id = args.task_id
     val_interval = args.val_interval
+    display_interval = args.val_interval
 
     t1 = time.time()
     Top1_err, Top5_err = 0.0, 0.0
     model.train()
+
+    #
     for iters in range(1, val_interval + 1):
         if bn_process:
             adjust_bn_momentum(model, iters)
@@ -59,8 +67,9 @@ def train(model, optimizer, device, args, *, bn_process=False, all_iters=None, r
                 l, r = bins[idx]
                 for i in range(timeout):
                     cand = get_random_cand()
-                    if l*1e6 <= get_cand_flops(cand) <= r*1e6:
-                        return cand
+                    # if l*1e6 <= get_cand_flops(cand) <= r*1e6:
+                    #     return cand
+                    return cand
                 return get_random_cand()
             output = model(data, get_uniform_sample_cand())
         else:
@@ -82,26 +91,21 @@ def train(model, optimizer, device, args, *, bn_process=False, all_iters=None, r
         Top1_err += 1 - prec1.item() / 100
         Top5_err += 1 - prec5.item() / 100
 
-        if all_iters % args.display_interval == 0: #20
-            printInfo = 'TRAIN Iter {}: lr = {:.6f},\tloss = {:.6f},\t'.format(all_iters, scheduler.get_lr()[0], loss.item()) + \
-                        'Top-1 err = {:.6f},\t'.format(Top1_err / args.display_interval) + \
-                        'Top-5 err = {:.6f},\t'.format(Top5_err / args.display_interval) + \
-                        'data_time = {:.6f},\ttrain_time = {:.6f}'.format(data_time, (time.time() - t1) / args.display_interval)
-
+        if all_iters % display_interval == 0: #20
+            printInfo = 'TRAIN Epoch {}: lr = {:.6f},\tloss = {:.6f},\t'.format(all_iters / display_interval, scheduler.get_lr()[0], loss.item()) + \
+                        'Top-1 err = {:.6f},\t'.format(Top1_err / display_interval) + \
+                        'Top-5 err = {:.6f},\t'.format(Top5_err / display_interval) + \
+                        'iter_load_data_time = {:.6f},\tepoch_train_time = {:.6f}'.format(data_time, time.time() - t1)
             logging.info(printInfo)
             t1 = time.time()
-
-            # if iters==val_interval:
-            report_top1, report_top5 = 1 - Top1_err/ args.display_interval, 1 - Top5_err / args.display_interval
-
-            reporter(task_id=task_id, total_iters=all_iters, val_acc=report_top1)
-
+            report_top1, report_top5 = 1 - Top1_err/ display_interval, 1 - Top5_err / display_interval
+            reporter(task_id=task_id, epoch=all_iters / display_interval, val_acc=report_top1)
             Top1_err, Top5_err = 0.0, 0.0
 
-        if all_iters % args.save_interval == 0:
-            save_checkpoint({
-                'state_dict': model.state_dict(),
-                }, all_iters, tag='Supernet:{}_'.format(task_id))
+    if all_iters % (args.save_interval * val_interval) == 0:
+        save_checkpoint({
+            'state_dict': model.state_dict(),
+            }, all_iters, tag='Supernet:{}_'.format(task_id))
 
     return all_iters, report_top1, report_top5
 
@@ -162,17 +166,33 @@ def pipeline(args, reporter):
 
     # load cifar
     dataset_train, dataset_valid = dataset_cifar.get_dataset("cifar10", N=args.randaug_n, M=args.randaug_m, RandA=args.RandA)
-    train_loader = torch.utils.data.DataLoader(dataset_train,
-                                               batch_size=args.batch_size,
-                                               num_workers=1)
-    valid_loader = torch.utils.data.DataLoader(dataset_valid,
-                                               batch_size=args.batch_size,
-                                               num_workers=1)
+    split = 0.0
+    split_idx = 0
+    train_sampler = None
+    if split > 0.0:
+        sss = StratifiedShuffleSplit(n_splits=5, test_size=split, random_state=0)
+        sss = sss.split(list(range(len(dataset_train))), dataset_train.targets)
+        for _ in range(split_idx + 1):
+            train_idx, valid_idx = next(sss)
+
+        train_sampler = SubsetRandomSampler(train_idx)
+        valid_sampler = SubsetSampler(valid_idx)
+    else:
+        valid_sampler = SubsetSampler([])
+
+    train_loader = torch.utils.data.DataLoader(
+        dataset_train, batch_size=args.batch_size, shuffle=True if train_sampler is None else False, num_workers=32,
+        pin_memory=True,
+        sampler=train_sampler, drop_last=True)
+
+    valid_loader = torch.utils.data.DataLoader(
+        dataset_train, batch_size=args.batch_size, shuffle=False, num_workers=16, pin_memory=True,
+        sampler=valid_sampler, drop_last=False)
+
     train_dataprovider = DataIterator(train_loader)
     val_dataprovider = DataIterator(valid_loader)
     args.val_interval = int(len(dataset_train) / args.batch_size)
     print('load data successfully')
-
 
     model = ShuffleNetV2_OneShot_cifar(block=args['block'], n_class=10)
 
@@ -184,17 +204,26 @@ def pipeline(args, reporter):
 
     # parameters divided into groups
     # test lr_group (4 stage * 5choice + 1base_lr == 21)
-    nums_lr_group = args['block']*args['choice']+1
     # lr_group = [i/100 for i in list(range(4,25,1))]
-    lr_group = list(np.random.uniform(0.4,0.8)  for i in range(nums_lr_group))
     # arch_search = list(np.random.randint(2) for i in range(5*2))
     # optimizer = torch.optim.SGD(get_dif_lr_parameters(model, lr_group, arch_search),
 
+    # test lr_range
+    args.learning_rate = args.learning_rate * (args['task_id']+ 1)
+
+
     # lr and parameters
-    optimizer = torch.optim.SGD(get_dif_lr_parameters(model, lr_group),
-                                # lr=args.learning_rate, # delete
-                                momentum=args.momentum,
-                                weight_decay=args.weight_decay)
+    if args.different_hpo:
+        nums_lr_group = args['block'] * args['choice'] + 1
+        lr_group = list(np.random.uniform(0.4, 0.8) for i in range(nums_lr_group))
+        optimizer = torch.optim.SGD(get_dif_lr_parameters(model, lr_group),
+                                    momentum=args.momentum,
+                                    weight_decay=args.weight_decay)
+    else:
+        optimizer = torch.optim.SGD(model.parameters(),
+                                    lr=args.learning_rate, # without hpo / glboal hpo
+                                    momentum=args.momentum,
+                                    weight_decay=args.weight_decay)
 
     # lookahead optimizer
     # base_opt = torch.optim.Adam(model.parameters(), lr=1e-3, betas=(0.9, 0.999))
@@ -249,6 +278,7 @@ def pipeline(args, reporter):
             validate(model, device, args, all_iters=all_iters)
         exit(0)
 
+    # according to total_iters
     while all_iters < args.total_iters:
         all_iters, Top1_acc, Top5_acc = \
             train(model, optimizer, device, args, bn_process=False, all_iters=all_iters, reporter=reporter)
@@ -276,8 +306,8 @@ def get_args():
     parser.add_argument('--auto-continue', type=bool, default=True, help='report frequency') # load
     parser.add_argument('--display-interval', type=int, default=20, help='report frequency')
 
-    parser.add_argument('--total-iters', type=int, default=150000, help='total iters') # 与lr直接相关
-    parser.add_argument('--val-interval', type=int, default=10000, help='report frequency') # iter 跑了多少轮
+    parser.add_argument('--total-iters', type=int, default=150000, help='total iters')
+    parser.add_argument('--val-interval', type=int, default=10000, help='report frequency')
     parser.add_argument('--save-interval', type=int, default=10000, help='report frequency')
 
     parser.add_argument('--train-dir', type=str, default='data/train', help='path to training dataset')
@@ -306,14 +336,18 @@ if __name__ == "__main__":
         choice=4,
         block=5,
         sample_choice=1,
-        total_iters=500,  # one epoch 195 * 256 = 49920
+        total_iters=19500,  # 1950,19500, one epoch 195 * 256 = 49920
         batch_size=256,
 
         # blockly lr_scheduler
         # learning_rate_group=ag.space.Real(0.4, 0.5, log=True),
 
+        fake=ag.space.Real(0.4, 0.8, log=True),
         # lr & wd
-        learning_rate=ag.space.Real(0.4, 0.5, log=True),
+        different_hpo=False,
+        # learning_rate=ag.space.Real(0.4, 0.8, log=True), # glboal hpo
+        # learning_rate=0.4, # without hpo
+        learning_rate=0.1, # test_lr_range
         # wd=ag.space.Real(1e-4, 5e-4, log=True),
 
         # randaug
@@ -331,8 +365,8 @@ if __name__ == "__main__":
         momentum=0.9,
         save='./models',
         label_smooth=0.1,
-        display_interval=20,
-        save_interval=100
+        # display_interval=195,#20
+        save_interval=5
     )
     def ag_train_cifar(args, reporter):
         return pipeline(args, reporter)
@@ -340,10 +374,10 @@ if __name__ == "__main__":
     # FIFOScheduler
     myscheduler = ag.scheduler.FIFOScheduler(ag_train_cifar,
                                              # resource={'num_cpus': 4, 'num_gpus': 1},
-                                             num_trials=1,
-                                             time_attr='all_iters',
+                                             num_trials=8,
+                                             time_attr='epoch',
                                              reward_attr="val_acc")
-    print(myscheduler)
+    # print(myscheduler)
     myscheduler.run()
     myscheduler.join_jobs()
     myscheduler.get_training_curves(filename='Supernet_curves', plot=True, use_legend=False)
