@@ -54,20 +54,20 @@ def accuracy(output, target, topk=(1,)):
         res.append(correct_k.mul_(100.0 / batch_size))
     return res
 
-def save_checkpoint(state, iters, tag=''):
-    if not os.path.exists("./models"):
-        os.makedirs("./models")
+def save_checkpoint(path, state, iters, tag=''):
+    if not os.path.exists("{}/models".format(path)):
+        os.makedirs("{}/models".format(path))
     filename = os.path.join(
-        "./models/{}checkpoint-{:06}.pth.tar".format(tag, iters))
+        "{}/models/{}checkpoint-{:06}.pth.tar".format(path, tag, iters))
     torch.save(state, filename)
     latestfilename = os.path.join(
-        "./models/{}checkpoint-latest.pth.tar".format(tag))
+        "{}/models/{}checkpoint-latest.pth.tar".format(path, tag))
     torch.save(state, latestfilename)
 
-def get_lastest_model():
-    if not os.path.exists('./models'):
-        os.mkdir('./models')
-    model_list = os.listdir('./models/')
+def get_lastest_model(path):
+    if not os.path.exists("{}/models".format(path)):
+        os.mkdir("{}/models".format(path))
+    model_list = os.listdir("{}/models".format(path))
     if model_list == []:
         return None, 0
     # path = os.path.abspath(model_list[0])
@@ -78,7 +78,7 @@ def get_lastest_model():
     if iters == []:
         lastest_model = model_list[-2]
         iters = re.findall(r'\d+', lastest_model)
-    return './models/' + lastest_model, int(iters[0])
+    return "{}/models/".format(path) + lastest_model, int(iters[0])
 
 def count_parameters_in_MB(model):
     # return np.sum(np.fromiter(np.prod(v.size())) for v in model.parameters())/1e6
@@ -176,6 +176,7 @@ def shuffle_dif_lr_parameters(model, lr_group, arch_search=None):
     return groups
 
 def mobile_dif_lr_parameters(model, lr_group, arch_search=None):
+
     features0 = []
     features1 = []
     features2 = []
@@ -232,6 +233,38 @@ def mobile_dif_lr_parameters(model, lr_group, arch_search=None):
             for i in range(0, len(stage), 1):
                 a = stage[i:i+1]
                 choice.append(a)
+
+    choice.append(base_conv)
+    groups = [dict(params=choice[x], lr=lr_group[x]) for x in range(len(choice))]
+    return groups
+
+def fast_dif_lr_parameters(model, lr_group, arch_search=None):
+
+    features0 = []
+    features1 = []
+    features2 = []
+    base_conv = []
+
+    # stage
+    for name, param in model.named_parameters():
+        if name.find('layer1_') >= 0 and len(param.size()) > 1:
+            features0.append(param)
+        elif name.find('layer2_') >= 0 and len(param.size()) > 1:
+            features1.append(param)
+        elif name.find('layer3_') >= 0 and len(param.size()) > 1:
+            features2.append(param)
+        else:
+            base_conv.append(param)
+
+    # 3 stages
+    op_name_list = [features0, features1, features2]
+
+    # 3 + 1 choices
+    choice = []
+    if len(op_name_list)==3:
+        for i in range(0, len(op_name_list), 1):
+            a = op_name_list[i:i+1]
+            choice.append(a[0])
 
     choice.append(base_conv)
     groups = [dict(params=choice[x], lr=lr_group[x]) for x in range(len(choice))]

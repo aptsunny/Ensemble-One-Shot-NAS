@@ -2,7 +2,7 @@ import math
 import torch
 import torch.nn as nn
 
-
+#
 class Inverted_Bottleneck(nn.Module):
     def __init__(self, inplanes, outplanes, shadow_bn, stride, activation=nn.ReLU6):
         super(Inverted_Bottleneck, self).__init__()
@@ -129,13 +129,36 @@ class SuperNetwork(nn.Module):
                 m.weight.data.uniform_(-init_range, init_range)
                 m.bias.data.zero_()
 
+    def num_flat_features(self, x):
+        size = x.size()[1:]
+        num_features = 1
+        for s in size:
+            num_features *= s
+        return num_features
+
+
     def forward(self, x, choice=None):
+
+        # choice = {
+        #     0: {'conv': [0, 0], 'rate': 1},
+        #     1: {'conv': [0, 0], 'rate': 1},
+        #     2: {'conv': [0, 0], 'rate': 1},
+        #     3: {'conv': [0, 0], 'rate': 1},
+        #     4: {'conv': [0, 0], 'rate': 1},
+        #     5: {'conv': [0, 0], 'rate': 1},
+        #     6: {'conv': [0, 0], 'rate': 1},
+        #     7: {'conv': [0, 0], 'rate': 1},
+        #     8: {'conv': [0, 0], 'rate': 1},
+        #     9: {'conv': [0, 0], 'rate': 1},
+        #     10: {'conv': [1, 2], 'rate': 1},
+        #     11: {'conv': [1, 2], 'rate': 0}}
+
         x = self.stem(x)
         for i in range(self.layers):
             x = self.Inverted_Block[i](x, choice[i])
         x = self.last_conv(x)
         x = self.global_pooling(x)
-        x = x.view(-1, last_channel)
+        x = x.view(-1, last_channel) #
         x = self.classifier(x)
         return x
 
@@ -157,5 +180,20 @@ if __name__ == '__main__':
 
     model = SuperNetwork(shadow_bn=False, layers=12, classes=10)
     print(model)
-    input = torch.randn((1, 3, 32, 32))
+    input = torch.randn(3, 32, 32).unsqueeze(0)
     print(model(input, choice)) # (1, 10)
+
+    #
+    # params = list(model.parameters())
+    # p_s = params[1].size()
+    # model.conv1.zero_grad()
+    # model.conv1.weight.grad()
+
+    import torch
+    from ptflops import get_model_complexity_info
+    with  torch.cuda.device(0):
+        # choice is added
+        flops, params = get_model_complexity_info(model, (3, 32, 32), as_strings=True, print_per_layer_stat=True)
+        print('{:<30}  {:<8}'.format('Computational complexity: ', flops))
+        print('{:<30}  {:<8}'.format('Number of parameters: ', params))
+
