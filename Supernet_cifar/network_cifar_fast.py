@@ -1,6 +1,7 @@
 import math
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from collections import namedtuple, defaultdict
 
 #####################
@@ -54,9 +55,23 @@ def build_graph(net):
 
 # Network
 
-def conv_bn(c_in, c_out):
+def conv_bn_3(c_in, c_out):
     return {
-        'conv': nn.Conv2d(c_in, c_out, kernel_size=3, stride=1, padding=1, bias=False),
+        'conv3': nn.Conv2d(c_in, c_out, kernel_size=3, stride=1, padding=1, bias=False),
+        'bn': BatchNorm(c_out),
+        'relu': nn.ReLU(True)
+    }
+
+def conv_bn_5(c_in, c_out, pad=1):
+    return {
+        'conv5': nn.Conv2d(c_in, c_out, kernel_size=5, stride=1, padding=pad, bias=False),
+        'bn': BatchNorm(c_out),
+        'relu': nn.ReLU(True)
+    }
+
+def conv_bn_7(c_in, c_out, pad=1):
+    return {
+        'conv7': nn.Conv2d(c_in, c_out, kernel_size=7, stride=1, padding=pad, bias=False),
         'bn': BatchNorm(c_out),
         'relu': nn.ReLU(True)
     }
@@ -64,25 +79,53 @@ def conv_bn(c_in, c_out):
 def residual(c):
     return {
         'in': Identity(),
-        'res1': conv_bn(c, c),
-        'res2': conv_bn(c, c),
+        'res1': conv_bn_3(c, c),
+        'res2': conv_bn_3(c, c),
         'add': (Add(), ['in', 'res2/relu']),
     }
+
+def residual_5(c):
+    return {
+        'in': Identity(),
+        'res1_5': conv_bn_5(c, c, pad=2),
+        'res2_5': conv_bn_5(c, c, pad=2),
+        'add': (Add(), ['in', 'res2_5/relu']),
+        # 'res_5': (conv_bn_5(c, c), ['in']),
+        # 'res2_5': conv_bn_5(c, c),
+        # 'res_7': (conv_bn_7(c, c), ['in']),
+        # 'res2_7': conv_bn_7(c, c),
+        # 'add': (AddWeighted(1, 1, 0, 0), ['in', 'res2/relu', 'res2_5/relu', 'res2_7/relu']),
+        # 'add_5': (AddWeighted(1, 0, 1, 0), ['in', 'res2/relu', 'res2_5/relu', 'res2_7/relu']),
+        # 'add_7': (AddWeighted(1, 0, 0, 1), ['in', 'res2/relu', 'res2_5/relu', 'res2_7/relu']),
+    }
+
+def residual_7(c):
+    return {
+        'in': Identity(),
+        'res1_7': conv_bn_7(c, c, pad=3),
+        'res2_7': conv_bn_7(c, c, pad=3),
+        'add': (Add(), ['in', 'res2_7/relu']),
+        # 'add_7': (AddWeighted(1, 0, 0, 1), ['in', 'res2/relu', 'res2_5/relu', 'res2_7/relu']),
+    }
+
 
 class Identity(namedtuple('Identity', [])):
     def __call__(self, x): return x
 
 class Add(namedtuple('Add', [])):
-    def __call__(self, x, y): return x + y
+    def __call__(self, x, y):
+        return x + y
 
-class AddWeighted(namedtuple('AddWeighted', ['wx', 'wy'])):
+class AddWeighted_bi(namedtuple('AddWeighted', ['wx', 'wy'])):
     def __call__(self, x, y): return self.wx * x + self.wy * y
+
+class AddWeighted(namedtuple('AddWeighted', ['wx', 'wy', 'wu', 'wv'])):
+    def __call__(self, x, y, u, v): return self.wx * x + self.wy * y + self.wu * u + self.wv * v
 
 class Mul(nn.Module):
     def __init__(self, weight):
         super().__init__()
         self.weight = weight
-
     def __call__(self, x):
         return x * self.weight
 
@@ -129,30 +172,32 @@ class GhostBatchNorm(BatchNorm):
                 self.weight, self.bias, False, self.momentum, self.eps)
 
 class Network(nn.Module):
-    def __init__(self, channels=None, weight=0.125, pool=nn.MaxPool2d(2), extra_layers=(), res_layers=('layer1', 'layer3')):
+    def __init__(self, channels=None, weight=0.125, pool=nn.MaxPool2d(2), extra_layers=(), res_layers=('layer1', 'layer3'), num_classes=10):
         # res_layers=('layer3'), shuffle_layers=('layer1')):
         super().__init__()
         channels = channels or {'prep': 64, 'layer1': 128, 'layer2': 256, 'layer3': 512}
         n = {
             'input': (None, []),
-            'prep': conv_bn(3, channels['prep']),
+            'prep': conv_bn_3(3, channels['prep']),
 
-            'layer1': dict(conv_bn(channels['prep'], channels['layer1']), pool=pool),
+            'layer1': dict(conv_bn_3(channels['prep'], channels['layer1']), pool=pool),
 
-            'layer2': dict(conv_bn(channels['layer1'], channels['layer2']), pool=pool),
+            'layer2': dict(conv_bn_3(channels['layer1'], channels['layer2']), pool=pool),
 
-            'layer3': dict(conv_bn(channels['layer2'], channels['layer3']), pool=pool),
+            'layer3': dict(conv_bn_3(channels['layer2'], channels['layer3']), pool=pool),
 
             'pool': nn.MaxPool2d(4),
             'flatten': Flatten(),
-            'linear': nn.Linear(channels['layer3'], 10, bias=False),
+            'linear': nn.Linear(channels['layer3'], num_classes, bias=False),
             'logits': Mul(weight),
         }
         for layer in res_layers:
             n[layer]['residual'] = residual(channels[layer])
+            # n[layer]['residual_5'] = residual_5(channels[layer])
+            # n[layer]['residual_7'] = residual_7(channels[layer])
 
         for layer in extra_layers:
-            n[layer]['extra'] = conv_bn(channels[layer], channels[layer])
+            n[layer]['extra'] = conv_bn_3(channels[layer], channels[layer])
 
         # for layer in shuffle_layers:
         #     n[layer]['residual'] = residual(channels[layer])
@@ -167,7 +212,6 @@ class Network(nn.Module):
     def forward(self, inputs):
         outputs = dict(inputs)
         for k, (node, ins) in self.graph.items():
-            # only compute nodes that are not supplied as inputs.
             if k not in outputs:
                 outputs[k] = node(*[outputs[x] for x in ins])
         return outputs
@@ -178,6 +222,119 @@ class Network(nn.Module):
                 node.half()
         return self
 
+class BasicBlock(nn.Module):
+    expansion = 1
+    def __init__(self, inplanes, planes, stride=1, choice=None):
+        super(BasicBlock, self).__init__()
+        self.stride = stride
+        self.kernel_size = [3, 5, 7]
+        self.kernel_padding = [1, 2, 3]
+        self.conbine = nn.ModuleList([])
+        result = [int(choice / 3), choice % 3]
+        self.conbine= nn.Sequential(
+                    self.conv_b(inplanes, planes, kernel_size=self.kernel_size[result[0]], padding=self.kernel_padding[result[0]]),
+                    nn.BatchNorm2d(planes),
+                    nn.ReLU(inplace=True),
+                    self.conv_b(inplanes, planes, kernel_size=self.kernel_size[result[1]],padding=self.kernel_padding[result[1]]),
+                    nn.BatchNorm2d(planes),
+                    nn.ReLU(inplace=True)
+                )
+
+    def conv_b(self, in_planes, out_planes, kernel_size, padding, stride=1):
+        return nn.Conv2d(in_planes, out_planes, kernel_size=kernel_size, stride=stride,
+                         padding=padding, bias=False)
+    # def conv3x3(self, in_planes, out_planes, stride=1):
+    #     "3x3 convolution with padding"
+    #     return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride,
+    #                      padding=1, bias=False)
+    # def conv5(self, in_planes, out_planes, stride=1):
+    #     return nn.Conv2d(in_planes, out_planes, kernel_size=5, stride=stride,
+    #                      padding=2, bias=False)
+    # def conv7(self, in_planes, out_planes, stride=1):
+    #     return nn.Conv2d(in_planes, out_planes, kernel_size=7, stride=stride,
+    #                      padding=3, bias=False)
+
+    def forward(self, x):
+        residual = x
+        # out = self.conv1(x)
+        # out = self.bn1(out)
+        # out = self.relu(out)
+        # out = self.conv2(out)
+        # out = self.bn2(out)
+        # out = self.relu(out)
+        # out += residual
+        out = self.conbine(x)
+        out = out + residual
+        return out
+
+class Network_cifar(nn.Module):
+    def __init__(self, num_classes=10):
+        super(Network_cifar, self).__init__()
+        channels = {'prep': 64, 'layer1': 128, 'layer2': 256, 'layer3': 512}
+        # prep
+        self.conv1 = self.conv3x3(3, channels['prep'])
+        self.bn1 = nn.BatchNorm2d(channels['prep'])
+        self.relu = nn.ReLU(inplace=True)
+        self.relu1 = nn.ReLU(inplace=True) #
+
+        # layer1
+        self.conv2 = self.conv3x3(channels['prep'], channels['layer1'])
+        self.bn2 = nn.BatchNorm2d(channels['layer1'])
+        self.relu2 = nn.ReLU(inplace=True)
+        self.pool2 = nn.MaxPool2d(2)
+        self.layer1_features = torch.nn.ModuleList() # 9 choices
+        for blockIndex in range(9):
+            self.layer1_features.append(
+                BasicBlock(channels['layer1'], channels['layer1'], stride=1, choice=blockIndex))
+
+        # layer2
+        self.conv3 = self.conv3x3(channels['layer1'], channels['layer2'], stride=1)
+        self.bn3 = nn.BatchNorm2d(channels['layer2'])
+        self.relu3 = nn.ReLU(inplace=True)
+        self.pool3 = nn.MaxPool2d(2)
+
+        # layer3
+        self.conv4 = self.conv3x3(channels['layer2'], channels['layer3'], stride=1)
+        self.bn4 = nn.BatchNorm2d(channels['layer3'])
+        self.relu4 = nn.ReLU(inplace=True)
+        self.pool4 = nn.MaxPool2d(2)
+        self.layer3_features = torch.nn.ModuleList()
+        for blockIndex in range(9):
+            self.layer3_features.append(
+                BasicBlock(channels['layer3'], channels['layer3'], stride=1, choice=blockIndex)) #
+
+        self.avgpool = nn.MaxPool2d(4)
+        self.fc = nn.Linear(channels['layer3'], num_classes, bias=False)
 
 
+    def conv3x3(self, in_planes, out_planes, stride=1):
+        "3x3 convolution with padding"
+        return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride,
+                         padding=1, bias=False)
 
+    def swish(self, x, beta=1):
+        return x * F.sigmoid(beta * x)
+
+    def mish(self, x):
+        return x * torch.tanh(F.softplus(x))
+
+    def forward(self, x, architecture):
+        x = self.relu1(self.bn1(self.conv1(x)))
+        x = self.pool2(self.relu2(self.bn2(self.conv2(x))))
+        x = self.layer1_features[architecture[0]](x)
+        x = self.pool3(self.relu3(self.bn3(self.conv3(x))))
+        # x = self.conv3(x)
+        # x = self.bn3(x)
+        # x = self.relu3(x)
+        # x = self.pool3(x)
+        x = self.pool4(self.relu4(self.bn4(self.conv4(x))))
+        # x = self.conv4(x)
+        # x = self.bn4(x)
+        # x = self.relu4(x)
+        # x = self.pool4(x)
+        x = self.layer3_features[architecture[1]](x)
+        x = self.avgpool(x)
+        x = x.view(x.size(0), -1)
+        x = self.fc(x) * 0.125 # weight=0.125
+        # x = self.fc(x)  # weight=0.125
+        return x

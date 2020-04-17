@@ -14,9 +14,10 @@ from dataset_cifar import DataIterator, SubsetSampler
 from utils import accuracy, AvgrageMeter, CrossEntropyLabelSmooth, save_checkpoint, get_lastest_model, get_parameters, shuffle_dif_lr_parameters, fast_dif_lr_parameters, mobile_dif_lr_parameters, count_parameters_in_MB, random_choice, adjust_bn_momentum
 
 # network
-# from network_mobile import SuperNetwork
-# from network_shuffle import ShuffleNetV2_OneShot_cifar
-from network_cifar_fast import Network
+from network_shuffle import ShuffleNetV2_OneShot_cifar
+from network_mobile import SuperNetwork
+from network_cifar_fast import Network_cifar
+from network_cifar_fast import Network # normal
 
 # optimizer
 # from flops import get_cand_flops
@@ -79,11 +80,21 @@ def train(model, device, args, *, bn_process=True, all_iters=None, reporter=None
             choice = random_choice(path_num=args.choice, m=args.sample_path, layers=args.block)
             output = model(data, choice)
 
-        elif args.block==3:
+        elif args.block==4:
             # cifar_fast
+            # choice = random_choice(path_num=args.choice, m=1, layers=args.block)
+            # batch = {'input': data, 'target': target, 'choice': choice}
             batch = {'input': data, 'target': target}
             states = model(batch)
             output = states['logits']
+
+        elif args.block==3:
+            # sample # (0,1,2) * 4 == 3^4= 81 # choice, [(0,1,2) (0,1,2)] *2
+            # get_random_cand = lambda: tuple(np.random.randint(9) for i in range(2))
+            # arch = [get_random_cand() for i in range(2)]
+            # 9*9 +
+            arch = [np.random.randint(1) for i in range(2)]
+            output = model(data, arch)
 
         loss = loss_function(output, target)
         optimizer.zero_grad()
@@ -92,6 +103,7 @@ def train(model, device, args, *, bn_process=True, all_iters=None, reporter=None
         for p in model.parameters():
             if p.grad is not None and p.grad.sum() == 0:
                 p.grad = None
+
 
         optimizer.step()
         scheduler.step()
@@ -103,25 +115,41 @@ def train(model, device, args, *, bn_process=True, all_iters=None, reporter=None
 
         if all_iters % display_interval == 0: #20
             # print('{}-task_id: {}, lr: {}'.format(args.signal, args.task_id, args.learning_rate))
+
             printInfo = '{}-Task_id: {}, Base_lr: {:.2f},\t'.format(args.signal, args.task_id, args.learning_rate) + \
-                        'TRAIN Epoch {}: lr = {:.4f},\tloss = {:.4f},\t'.format(all_iters / display_interval, scheduler.get_lr()[0], loss.item()) + \
+                        'TRAIN Epoch {}: lr = {:.4f}, \tloss = {:.4f},\t'.format(all_iters / display_interval, scheduler.get_lr()[0], loss.item()) + \
                         'Top-1 err = {:.4f},\t'.format(Top1_err / display_interval) + \
                         'Top-5 err = {:.4f},\t'.format(Top5_err / display_interval) + \
                         'epoch_train_time = {:.2f}'.format(time.time() - t1)
                         # 'iter_load_data_time = {:.6f},\tepoch_train_time = {:.6f}'.format(data_time, time.time() - t1)
+
+            # printInfo = '{}-Task_id: {}, Base_lr: {:.2f},\t'.format(args.signal, args.task_id, args.learning_rate) + \
+            #             'TRAIN Epoch {}: lr = ({}):{:.4f}\{:.4f},\tloss = {:.4f},\t'.format(all_iters / display_interval, len(scheduler.get_lr()), scheduler.get_lr()[0],  scheduler.get_lr()[1],loss.item()) + \
+            #             'Top-1 err = {:.4f},\t'.format(Top1_err / display_interval) + \
+            #             'Top-5 err = {:.4f},\t'.format(Top5_err / display_interval) + \
+            #             'epoch_train_time = {:.2f}'.format(time.time() - t1)
+            #             'iter_load_data_time = {:.6f},\tepoch_train_time = {:.6f}'.format(data_time, time.time() - t1)
             logging.info(printInfo)
+
+
+
             t1 = time.time()
             report_top1, report_top5 = 1 - Top1_err/ display_interval, 1 - Top5_err / display_interval
             # print(all_iters / display_interval, report_top1)
             reporter(task_id=task_id, epoch=all_iters / display_interval, val_acc=report_top1)
             Top1_err, Top5_err = 0.0, 0.0
 
+            # lr group log
+            for index, param_group in enumerate(optimizer.param_groups):
+                logging.info("lr_group:({}/{}),update_lr/base_lr:{:.4f}/{:.4f}".format(index+1, len(scheduler.get_lr()), param_group['lr'], param_group['initial_lr']))
+
+
     if all_iters % (args.save_interval * val_interval) == 0:
-        save_checkpoint(args.path, {
+        latestfilename = save_checkpoint(args.path, {
             'state_dict': model.state_dict(),
             }, all_iters, tag='Supernet:{}_'.format(task_id))
 
-    return all_iters, report_top1, report_top5
+    return all_iters, report_top1, report_top5, latestfilename
 
 def validate(model, device, args, *, all_iters=None):
     objs = AvgrageMeter()
@@ -132,8 +160,7 @@ def validate(model, device, args, *, all_iters=None):
     val_dataprovider = args.val_dataprovider
 
     model.eval()
-    # max_val_iters = 250 # 250
-    max_val_iters = len(val_dataprovider) # 250
+    max_val_iters = int(args.test_interval / args.batch_size)
     t1  = time.time()
     with torch.no_grad():
         for _ in range(1, max_val_iters + 1):
@@ -142,8 +169,11 @@ def validate(model, device, args, *, all_iters=None):
             data, target = data.to(device), target.to(device)
 
             # add
-            cifar_architecture = [0, 0, 0, 0, 0]
-            output = model(data, cifar_architecture)
+            # cifar_architecture = [0, 0, 0, 0, 0]
+            batch = {'input': data, 'target': target}
+            states = model(batch)
+            output = states['logits']
+            # output = model(data, cifar_architecture)
             loss = loss_function(output, target)
 
             prec1, prec5 = accuracy(output, target, topk=(1, 5))
@@ -190,7 +220,10 @@ def pipeline(args, reporter):
         use_gpu = True
 
     # load cifar
-    dataset_train, dataset_valid = dataset_cifar.get_dataset("cifar10", N=args.randaug_n, M=args.randaug_m, RandA=args.RandA)
+    # dataset_train, dataset_valid = dataset_cifar.get_dataset("cifar10", N=args.randaug_n, M=args.randaug_m, RandA=args.RandA)
+    dataset_train, dataset_valid = dataset_cifar.get_dataset("cifar100", N=args.randaug_n, M=args.randaug_m, RandA=args.RandA)
+
+
     split = 0.0
     split_idx = 0
     train_sampler = None
@@ -209,20 +242,31 @@ def pipeline(args, reporter):
         pin_memory=True,
         sampler=train_sampler, drop_last=True)
 
+    # valid_loader = torch.utils.data.DataLoader(
+    #     dataset_train, batch_size=args.batch_size, shuffle=False, num_workers=16, pin_memory=True,
+    #     sampler=valid_sampler, drop_last=False)
+
     valid_loader = torch.utils.data.DataLoader(
-        dataset_train, batch_size=args.batch_size, shuffle=False, num_workers=16, pin_memory=True,
-        sampler=valid_sampler, drop_last=False)
+        dataset_valid, batch_size=args.batch_size, shuffle=False, num_workers=16, pin_memory=True,
+        drop_last=False)
+
     train_dataprovider = DataIterator(train_loader)
     val_dataprovider = DataIterator(valid_loader)
+    args.test_interval = len(valid_loader)
     args.val_interval = int(len(dataset_train) / args.batch_size) # step
     print('load data successfully')
 
     # network
-    # model = ShuffleNetV2_OneShot_cifar(block=args['block'], n_class=10)
-    # model = SuperNetwork(shadow_bn=True, layers=args['block'], classes=10)
-    # print("param size = %fMB" % count_parameters_in_MB(model))
-    # model = Network(net()).to(device).half()
-    model = Network()
+    if args.block == 5:
+        model = ShuffleNetV2_OneShot_cifar(block=args['block'], n_class=args.num_classes)
+    elif args.block == 12:
+        model = SuperNetwork(shadow_bn=True, layers=args['block'], classes=args.num_classes)
+        print("param size = %fMB" % count_parameters_in_MB(model))
+    elif args.block == 4:
+        model = Network(num_classes=args.num_classes) # model = Network(net()).to(device).half()
+    elif args.block == 3:
+        model = Network_cifar(num_classes=args.num_classes)
+
 
     # lr and parameters
     # original optimizer lr & wd
@@ -253,13 +297,21 @@ def pipeline(args, reporter):
                                         momentum=args.momentum,
                                         weight_decay=args.weight_decay)
 
-        elif args['block']==3:
+        elif args['block']==3 or args['block']==4:
             nums_lr_group=4
             lr_l, lr_r = float(arg.lr_range.split(',')[0]), float(arg.lr_range.split(',')[1])
             lr_group = list(np.random.uniform(lr_l, lr_r) for i in range(nums_lr_group))
             optimizer = torch.optim.SGD(fast_dif_lr_parameters(model, lr_group),
                                         momentum=args.momentum,
                                         weight_decay=args.weight_decay)
+
+            # log lr
+            # for param_group in optimizer.param_groups:
+            #     print(param_group['lr'])
+
+            # save optim
+            # torch.save(optimizer.state_dict(),'optimizer.pt')
+            # optimizer.load_state_dict(torch.load('optimizer.pt'))
     else:
         optimizer = torch.optim.SGD(model.parameters(),
                                     lr=args.learning_rate, # without hpo / glboal hpo
@@ -328,10 +380,23 @@ def pipeline(args, reporter):
 
     # according to total_iters
     while all_iters < args.total_iters:
-        all_iters, Top1_acc, Top5_acc = \
+        all_iters, Top1_acc, Top5_acc, latestfilename = \
             train(model, device, args, bn_process=True, all_iters=all_iters, reporter=reporter)
         # save_checkpoint({'state_dict': model.state_dict(),}, args.total_iters, tag='bnps-')
-    scheduler.step()
+
+
+    # path = '/home/ubuntu/workspace/nni_sy/3rdparty/SinglePathOneShot/src/Supernet_cifar/save/without_hpo/task_id_0/models/Supernet:0_checkpoint-latest.pth.tar'
+    # checkpoint = torch.load(path, map_location=None if use_gpu else 'cpu')
+    # model.load_state_dict(checkpoint['state_dict'], strict=True)
+    # validate(model, device, args, all_iters=all_iters)
+
+    # path = '/home/ubuntu/workspace/nni_sy/3rdparty/SinglePathOneShot/src/Supernet_cifar/save/without_hpo/task_id_0/models/Supernet:0_checkpoint-latest.pth.tar'
+    checkpoint = torch.load(latestfilename, map_location=None)
+    model.load_state_dict(checkpoint['state_dict'], strict=True)
+    validate(model, device, args, all_iters=all_iters)
+
+
+    # scheduler.step()
     # reporter(task_id=task_id, val_acc=Top1_acc)
 
 def get_args():
@@ -348,16 +413,18 @@ def get_args():
     parser.add_argument('--train-dir', type=str, default='data/train', help='path to training dataset')
     parser.add_argument('--val-dir', type=str, default='data/val', help='path to validation dataset')
 
+    parser.add_argument('--num-classes', type=int, default=10, help='num_classes')
     parser.add_argument('--num-trials', type=int, default=2, help='num_trials')
     # total_iters=7800,  # 1560, 3120, 6240, 390, 780, 39000, 1950, 19500, 195*36=7020, 195*40=7800
-    parser.add_argument('--total-iters', type=int, default=1560, help='total iters')
+    parser.add_argument('--total-iters', type=int, default=780, help='total iters')
     # shuffle 256, mobile 288, cifar-fast 64
     parser.add_argument('--batch-size', type=int, default=64, help='batch size')
     # network_shuffle: 4 choice for 5 blocks (Shuffle3x3\Shuffle5x5\Shuffle7x7\Xception)
     # network_mobile: 1/2/3 choice for 12 layers {'conv': [1, 2], 'rate': 1},
-    parser.add_argument('--choice', type=int, default=4, help='choice')
-    # shuffle block 5, mobile 12 layers, cifar_fast 3 layers
-    parser.add_argument('--block', type=int, default=3, help='block')
+    # network_fast_cifar:  conv3,conv5,conv7
+    parser.add_argument('--choice', type=int, default=3, help='choice')
+    # shuffle block 5, mobile 12 layers, cifar_fast 4 layers
+    parser.add_argument('--block', type=int, default=4, help='block')
     # shuffle ,1/2/3/4, mobiel, sample_path=ag.space.Int(1, 2, 3),
     parser.add_argument('--sample_path', type=int, default=2, help='sample_path')
 
@@ -365,7 +432,7 @@ def get_args():
     # learning_rate=ag.space.Real(0.4, 0.8, log=True), # glboal hpo, shuffle
     # learning_rate=ag.space.Real(0.01, 0.2, log=True),  # glboal hpo, fast
     # parser.add_argument('--learning-rate', type=float, default=0.5, help='init learning rate')
-    parser.add_argument('--lr-range', type=str, default='0.01,0.2', help='learning-rate range. default is 0.01,0.2.')
+    parser.add_argument('--lr-range', type=str, default= "0.001,0.2", help='learning-rate range. default is 0.001,0.2.')
     # parser.add_argument('--weight-decay', type=float, default=4e-5, help='weight decay')
     parser.add_argument('--wd-range', type=str, default='4e-5,5e-3', help='weight-decay range. default is 4e-5,5e-3.')
 
@@ -392,6 +459,7 @@ if __name__ == "__main__":
         sample_path=arg.sample_path,
         total_iters=arg.total_iters,
         batch_size=arg.batch_size,
+        num_classes = arg.num_classes,
 
         # Supernet HPO, Some tricks work for specific hyperparameters
         # fake=ag.space.Real(0.4, 0.8, log=True),
@@ -400,7 +468,7 @@ if __name__ == "__main__":
         learning_rate=ag.space.Real(arg.lr_range.split(',')[0], arg.lr_range.split(',')[1], log=True),  # glboal hpo, fast
         lr_range = arg.lr_range, # different hpo
         # weight_decay=ag.space.Real(4e-5, 5e-3, log=True),
-        weight_decay=ag.space.Real(arg.wd_range.split(',')[0], arg.wd_range.split(',')[1], log=True), # glboal hpo, fast
+        # weight_decay=ag.space.Real(arg.wd_range.split(',')[0], arg.wd_range.split(',')[1], log=True), # glboal hpo, fast
         # randaug_n=ag.space.Int(3, 4, 5),
         # randaug_m=ag.space.Int(5, 10, 15),
 
@@ -409,9 +477,9 @@ if __name__ == "__main__":
         randaug_m=5,
         momentum=arg.momentum,
         label_smooth=arg.label_smooth,
-        save_interval=1,
+        save_interval=5, #5
         # save='./models',
-        # weight_decay=4e-5,
+        weight_decay=4e-5,
     )
     def ag_train_cifar(args, reporter):
         return pipeline(args, reporter)

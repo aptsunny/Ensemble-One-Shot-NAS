@@ -6,8 +6,9 @@ import torch
 import cv2
 import PIL
 from PIL import Image
+
 from torchvision import transforms
-from torchvision.datasets import CIFAR10
+from torchvision.datasets import CIFAR10, CIFAR100, SVHN
 from torch.utils.data import Sampler
 
 # import torchvision.transforms as transforms
@@ -81,19 +82,17 @@ class DataIterator(object):
             _, data = next(self.iterator)
         return data[0], data[1]
 
-def get_dataset(cls, cutout_length=0, N=3, M=5, RandA=False):
+def get_dataset(dataset, cutout_length=0, N=3, M=5, RandA=False):
     MEAN = [0.49139968, 0.48215827, 0.44653124]
     STD = [0.24703233, 0.24348505, 0.26158768]
 
     transf = [
-        # transforms.Resize(256), # cifar->imagenet
         transforms.RandomCrop(32, padding=4),
         transforms.RandomHorizontalFlip()
     ]
 
     normalize = [
-        # transforms.Resize(224), # cifar->imagenet
-        transforms.Resize(32), # cifar->imagenet
+        transforms.Resize(32),
         transforms.ToTensor(),
         transforms.Normalize(MEAN, STD)
     ]
@@ -108,9 +107,14 @@ def get_dataset(cls, cutout_length=0, N=3, M=5, RandA=False):
 
     valid_transform = transforms.Compose(normalize)
 
-    if cls == "cifar10":
+    if dataset == "cifar10":
         dataset_train = CIFAR10(root="./data", train=True, download=True, transform=train_transform)
         dataset_valid = CIFAR10(root="./data", train=False, download=True, transform=valid_transform)
+
+    elif dataset == 'cifar100':
+        dataset_train = CIFAR100(root="./data", train=True, download=True, transform=train_transform)
+        dataset_valid = CIFAR100(root="./data", train=False, download=True, transform=valid_transform)
+
     else:
         raise NotImplementedError
     return dataset_train, dataset_valid
@@ -130,6 +134,4 @@ class SubsetSampler(Sampler):
 
     def __len__(self):
         return len(self.indices)
-
-### randa cifar
 

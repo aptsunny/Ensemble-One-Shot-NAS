@@ -63,6 +63,7 @@ def save_checkpoint(path, state, iters, tag=''):
     latestfilename = os.path.join(
         "{}/models/{}checkpoint-latest.pth.tar".format(path, tag))
     torch.save(state, latestfilename)
+    return latestfilename
 
 def get_lastest_model(path):
     if not os.path.exists("{}/models".format(path)):

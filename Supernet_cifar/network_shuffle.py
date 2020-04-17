@@ -30,7 +30,7 @@ class ShuffleNetV2_OneShot_cifar(nn.Module):
             self.stage_strides = [1, 1, 2, 2]  # downsample
             # width:channel
             # 3-16, (16-16, 16-16, 16-32, 32-64), 64-10
-            self.stage_out_channels = [-1, 16, 16, 16, 32, 64, 777]
+            self.stage_out_channels = [-1, 16, 16, 16, 32, 64, 128]
 
             # building first layer
             input_channel = self.stage_out_channels[1]

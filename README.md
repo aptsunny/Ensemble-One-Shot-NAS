@@ -172,11 +172,20 @@ In my test, only cost 2min in a trial, reached at least 94% test set accuracy, R
 
 ```bash
 cd src/Supernet_cifar
-python3 train.py --signal different_hpo --different-hpo --num-trials 1 --total-iters 7800 --batch-size 64 --block 3 --lr-range '0.01,0.2' --wd-range '4e-5,5e-3'
+python3 train.py --num-classes 10 --signal different_hpo --different-hpo --num-trials 16 --total-iters 7800 --batch-size 64 --block 4 --lr-range "0.01,0.2" --wd-range "4e-5,5e-3"
+
+python3 train.py --num-classes 10 --signal glboal_hpo --num-trials 16 --total-iters 7800 --batch-size 64 --block 4 --lr-range '0.01,0.2' --wd-range '4e-5,5e-3'
+
+python3 train.py --num-classes 10 --signal without_hpo --num-trials 1 --total-iters 7800 --batch-size 64 --block 4 --lr-range "0.2,0.201" --wd-range "4e-5,5e-3"
+
+---
+python3 train.py --num-classes 10 --signal without_hpo --num-trials 2 --total-iters 7800 --batch-size 64 --block 3 --lr-range "0.2,0.201" --wd-range "4e-5,5e-3"
+
+
+# cifar100
+python3 train.py --num-classes 100 --signal cifar100_without_hpo --num-trials 1 --total-iters 7800 --batch-size 64 --block 4 --lr-range "0.2,0.201" --wd-range "4e-5,5e-3"
 
 ```
-
-
 
 
 + Imagenet:
